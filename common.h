@@ -53,6 +53,8 @@ typedef struct {
     char ss_ip[INET_ADDRSTRLEN];
     int ss_nm_port;
     int ss_client_port;
+    char dest_ss_ip[INET_ADDRSTRLEN]; // For copy operations
+    int dest_ss_client_port; // For copy operations
     char accessible_paths[MAX_ACCESSIBLE_PATHS][MAX_PATH_LEN];
     int num_accessible_paths;
 } Message;

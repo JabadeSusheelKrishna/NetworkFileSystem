@@ -159,10 +159,73 @@ void *handle_nm_connection(void *socket_desc) {
             break;
         }
         case COPY_FILE: {
-            // Placeholder for copy operation. Will implement later.
-            log_message("SS: Received COPY_FILE request for %s to %s. Not yet implemented.", msg.path, msg.path2);
-            response_msg.operation = NACK;
-            response_msg.error_code = INVALID_OPERATION; // Or a specific error for not implemented
+            Message file_content_msg;
+            memset(&file_content_msg, 0, sizeof(Message));
+            int bytes_read = 0;
+
+            // 1. Read the source file locally
+            if (acquire_read_lock(msg.path) == 0) {
+                response_msg.error_code = ss_read(msg.path, file_content_msg.data, &bytes_read);
+                file_content_msg.data_size = bytes_read;
+                release_read_lock(msg.path);
+            } else {
+                response_msg.error_code = FILE_IN_USE;
+            }
+
+            if (response_msg.error_code != SUCCESS) {
+                log_message("SS: Failed to read source file '%s' for COPY_FILE. Error: %d", msg.path, response_msg.error_code);
+                response_msg.operation = NACK;
+                break;
+            }
+
+            // 2. Connect to the destination SS's client port
+            int dest_ss_sockfd = create_socket();
+            if (dest_ss_sockfd < 0) {
+                response_msg.operation = NACK;
+                response_msg.error_code = NETWORK_ERROR;
+                break;
+            }
+            log_message("SS: Connecting to destination SS at %s:%d for COPY_FILE.", msg.dest_ss_ip, msg.dest_ss_client_port);
+            if (connect_to_server(dest_ss_sockfd, msg.dest_ss_ip, msg.dest_ss_client_port) < 0) {
+                close(dest_ss_sockfd);
+                response_msg.operation = NACK;
+                response_msg.error_code = SS_UNAVAILABLE;
+                log_message("SS: Failed to connect to destination SS %s:%d for COPY_FILE.", msg.dest_ss_ip, msg.dest_ss_client_port);
+                break;
+            }
+
+            // 3. Send WRITE_FILE request to destination SS
+            file_content_msg.operation = WRITE_FILE;
+            strcpy(file_content_msg.path, msg.path2); // Destination path
+            file_content_msg.write_mode = WRITE_MODE_SYNC; // Assume synchronous write for copy
+
+            log_message("SS: Sending WRITE_FILE request for '%s' to destination SS %s:%d.", msg.path2, msg.dest_ss_ip, msg.dest_ss_client_port);
+            if (send_message(dest_ss_sockfd, &file_content_msg) < 0) {
+                close(dest_ss_sockfd);
+                response_msg.operation = NACK;
+                response_msg.error_code = NETWORK_ERROR;
+                break;
+            }
+
+            Message dest_ss_response_msg;
+            if (receive_message(dest_ss_sockfd, &dest_ss_response_msg) != 0) {
+                log_message("SS: Failed to receive response from destination SS for WRITE_FILE or connection closed.");
+                close(dest_ss_sockfd);
+                response_msg.operation = NACK;
+                response_msg.error_code = NETWORK_ERROR;
+                break;
+            }
+            close(dest_ss_sockfd);
+
+            if (dest_ss_response_msg.operation == ACK && dest_ss_response_msg.error_code == SUCCESS) {
+                response_msg.operation = ACK;
+                response_msg.error_code = SUCCESS;
+                log_message("SS: Successfully copied '%s' to '%s' on destination SS %s.", msg.path, msg.path2, msg.dest_ss_ip);
+            } else {
+                response_msg.operation = NACK;
+                response_msg.error_code = dest_ss_response_msg.error_code;
+                log_message("SS: Destination SS %s failed to write '%s'. Error: %d", msg.dest_ss_ip, msg.path2, dest_ss_response_msg.error_code);
+            }
             break;
         }
         default: {

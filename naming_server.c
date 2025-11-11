@@ -2,6 +2,7 @@
 #include "utils.h"
 #include "trie.h"
 #include "lru_cache.h"
+#include <stdbool.h> // For bool type
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +15,7 @@
 StorageServerInfo registered_ss[MAX_SS];
 int num_registered_ss = 0;
 pthread_mutex_t ss_list_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int current_ss_index = 0; // For round-robin selection
 
 // Global Trie for path management
 TrieNode *path_trie_root;
@@ -21,12 +23,12 @@ TrieNode *path_trie_root;
 // Global LRU Cache for path lookups
 LRUCache path_lru_cache;
 
-// Helper to find an available Storage Server for creation
-// For now, just picks the first registered SS
+// Helper to find an available Storage Server for creation using round-robin
 StorageServerInfo *get_available_ss_for_creation() {
     pthread_mutex_lock(&ss_list_mutex);
     if (num_registered_ss > 0) {
-        StorageServerInfo *ss = &registered_ss[0]; // Simple selection
+        StorageServerInfo *ss = &registered_ss[current_ss_index];
+        current_ss_index = (current_ss_index + 1) % num_registered_ss; // Move to the next SS
         pthread_mutex_unlock(&ss_list_mutex);
         return ss;
     }
@@ -266,12 +268,92 @@ void *handle_connection(void *socket_desc) {
             break;
         }
         case COPY_FILE: {
-            // NM needs to find source SS and destination SS
-            // Then instruct source SS to send to dest SS, or NM mediates
-            // For now, just a placeholder.
-            log_message("NM: Received COPY_FILE request for '%s' to '%s'. Not yet implemented.", msg.path, msg.path2);
-            response_msg.operation = NACK;
-            response_msg.error_code = INVALID_OPERATION;
+            StorageServerInfo *source_ss = trie_search(path_trie_root, msg.path);
+            if (!source_ss) {
+                response_msg.operation = NACK;
+                response_msg.error_code = FILE_NOT_FOUND;
+                log_message("NM: Source path '%s' not found for COPY_FILE operation.", msg.path);
+                break;
+            }
+
+            StorageServerInfo *dest_ss = trie_search(path_trie_root, msg.path2);
+            bool dest_path_exists = (dest_ss != NULL);
+
+            if (!dest_path_exists) {
+                dest_ss = get_available_ss_for_creation();
+                if (!dest_ss) {
+                    response_msg.operation = NACK;
+                    response_msg.error_code = SS_UNAVAILABLE;
+                    log_message("NM: No Storage Server available for destination of COPY_FILE operation.");
+                    break;
+                }
+            }
+
+            // Connect to the source SS's NM communication port
+            int source_ss_sockfd = create_socket();
+            if (source_ss_sockfd < 0) {
+                response_msg.operation = NACK;
+                response_msg.error_code = NETWORK_ERROR;
+                break;
+            }
+            if (connect_to_server(source_ss_sockfd, source_ss->ip, source_ss->nm_port) < 0) {
+                close(source_ss_sockfd);
+                response_msg.operation = NACK;
+                response_msg.error_code = SS_UNAVAILABLE;
+                log_message("NM: Failed to connect to source SS %s:%d for COPY_FILE.", source_ss->ip, source_ss->nm_port);
+                break;
+            }
+
+            // Forward the COPY_FILE request to the source SS
+            Message ss_copy_request_msg;
+            memset(&ss_copy_request_msg, 0, sizeof(Message));
+            ss_copy_request_msg.operation = COPY_FILE;
+            strcpy(ss_copy_request_msg.path, msg.path); // Source path
+            strcpy(ss_copy_request_msg.path2, msg.path2); // Destination path
+            strcpy(ss_copy_request_msg.dest_ss_ip, dest_ss->ip);
+            ss_copy_request_msg.dest_ss_client_port = dest_ss->client_port;
+
+            log_message("NM: Forwarding COPY_FILE request from '%s' to '%s' (on SS %s:%d) to source SS %s:%d.",
+                        msg.path, msg.path2, dest_ss->ip, dest_ss->client_port, source_ss->ip, source_ss->nm_port);
+
+            if (send_message(source_ss_sockfd, &ss_copy_request_msg) < 0) {
+                close(source_ss_sockfd);
+                response_msg.operation = NACK;
+                response_msg.error_code = NETWORK_ERROR;
+                break;
+            }
+
+            Message ss_response_msg;
+            if (receive_message(source_ss_sockfd, &ss_response_msg) != 0) {
+                log_message("NM: Failed to receive response from source SS for COPY_FILE or connection closed.");
+                close(source_ss_sockfd);
+                response_msg.operation = NACK;
+                response_msg.error_code = NETWORK_ERROR;
+                break;
+            }
+            close(source_ss_sockfd);
+
+            if (ss_response_msg.operation == ACK && ss_response_msg.error_code == SUCCESS) {
+                // Update NM's internal state (Trie and SS accessible paths) if destination path was new
+                if (!dest_path_exists) {
+                    pthread_mutex_lock(&ss_list_mutex);
+                    trie_insert(path_trie_root, msg.path2, dest_ss);
+                    if (dest_ss->num_accessible_paths < MAX_ACCESSIBLE_PATHS) {
+                        strcpy(dest_ss->accessible_paths[dest_ss->num_accessible_paths], msg.path2);
+                        dest_ss->num_accessible_paths++;
+                    } else {
+                        log_message("NM: Warning: Destination SS %s accessible paths limit reached. Path '%s' not added to SS info list.", dest_ss->ip, msg.path2);
+                    }
+                    pthread_mutex_unlock(&ss_list_mutex);
+                }
+                response_msg.operation = ACK;
+                response_msg.error_code = SUCCESS;
+                log_message("NM: Successfully copied '%s' to '%s'.", msg.path, msg.path2);
+            } else {
+                response_msg.operation = NACK;
+                response_msg.error_code = ss_response_msg.error_code;
+                log_message("NM: Source SS %s failed to copy '%s'. Error: %d", source_ss->ip, msg.path, ss_response_msg.error_code);
+            }
             break;
         }
         case READ_FILE:
