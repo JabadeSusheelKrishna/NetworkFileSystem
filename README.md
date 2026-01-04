@@ -1,6 +1,6 @@
 # Network File System (NFS) - Complete Implementation in C
 
-A fully-featured, distributed Network File System implementation in C with support for multiple storage servers, efficient path searching, LRU caching, asynchronous writes, concurrent client access, and data replication.
+A fully-featured, distributed Network File System implementation in C with support for multiple storage servers, efficient path searching, LRU caching, asynchronous writes, concurrent client access, and data replication. for clear explaination, please see [explaination doc](./explaination.md)
 
 ## Table of Contents
 
