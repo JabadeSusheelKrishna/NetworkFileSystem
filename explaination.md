@@ -1,9 +1,4 @@
-Got it — this is a **classic distributed systems / OS project**, and diagrams will *massively* improve how evaluators understand it. I’ll give you **clean, exam-ready UML + Mermaid diagrams** that match *exactly* what you’ve implemented (requirements-level, not low-level code).
-
-Below is a **complete diagram pack** you can directly paste into reports / README / viva slides.
-
----
-
+# Project Explaination 🕵🏻‍♂️
 ## 1️⃣ High-Level Architecture (System UML – Component Diagram)
 
 This explains **who talks to whom and why**.
@@ -244,12 +239,3 @@ You can safely say:
 * **“Optimized lookup using Trie/HashMap + LRU cache”**
 
 ---
-
-If you want next:
-
-* 📄 **One-page architecture explanation for report**
-* 🧠 **Viva questions + answers**
-* 💼 **2-line resume bullets (SDE-level)**
-* 🖼️ **PNG exports of these diagrams**
-
-Just tell me 👌
